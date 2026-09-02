@@ -76,7 +76,7 @@ jobs:
 
       - name: Download and mount OBS (for libobs.dylib)
         run: |
-          curl -L "https://github.com/obsproject/obs-studio/releases/download/${OBS_VERSION}/OBS-Studio-${OBS_VERSION}-macOS.dmg" -o /tmp/obs.dmg
+          curl -L "https://github.com/obsproject/obs-studio/releases/download/${OBS_VERSION}/OBS-Studio-${OBS_VERSION}-macOS-Apple.dmg" -o /tmp/obs.dmg
           hdiutil attach /tmp/obs.dmg -mountpoint /tmp/obs_mount -nobrowse
           mkdir -p /tmp/obs_lib
           cp /tmp/obs_mount/OBS.app/Contents/Frameworks/libobs.dylib /tmp/obs_lib/ 2>/dev/null || \
@@ -143,7 +143,7 @@ jobs:
       - name: Download OBS Windows (for obs.dll)
         shell: bash
         run: |
-          curl -L "https://github.com/obsproject/obs-studio/releases/download/${OBS_VERSION}/OBS-Studio-${OBS_VERSION}-Windows.zip" -o /tmp/obs.zip
+          curl -L "https://github.com/obsproject/obs-studio/releases/download/${OBS_VERSION}/OBS-Studio-${OBS_VERSION}-Windows-x64.zip" -o /tmp/obs.zip
           mkdir -p /tmp/obs_app
           cd /tmp/obs_app && unzip -q /tmp/obs.zip
           find /tmp/obs_app -name "obs.dll" 2>/dev/null
