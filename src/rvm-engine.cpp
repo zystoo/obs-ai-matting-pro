@@ -1,8 +1,5 @@
 #include "rvm-engine.h"
 
-#include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
-
 #include <onnxruntime_cxx_api.h>
 
 #include <cstring>
@@ -11,14 +8,23 @@
 #include <chrono>
 #include <stdexcept>
 
+// ═══════════════════════════════════════════════════════════════════
+// RVMMatter::Impl - ONNX Runtime session management
+// ═══════════════════════════════════════════════════════════════════
+
 struct RVMMatter::Impl {
     std::unique_ptr<Ort::Env> env;
     std::unique_ptr<Ort::Session> session;
     Ort::MemoryInfo mem_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
+    // Input/output names
     std::vector<std::string> in_names;
     std::vector<std::string> out_names;
 };
+
+// ═══════════════════════════════════════════════════════════════════
+// Constructor / Destructor
+// ═══════════════════════════════════════════════════════════════════
 
 RVMMatter::RVMMatter()
     : impl_(std::make_unique<Impl>())
@@ -28,6 +34,10 @@ RVMMatter::RVMMatter()
 
 RVMMatter::~RVMMatter() = default;
 
+// ═══════════════════════════════════════════════════════════════════
+// Model loading with cross-platform execution providers
+// ═══════════════════════════════════════════════════════════════════
+
 bool RVMMatter::load_model(const std::string &model_path, Backend preferred)
 {
     if (model_path.empty()) {
@@ -35,6 +45,7 @@ bool RVMMatter::load_model(const std::string &model_path, Backend preferred)
         return false;
     }
 
+    // Try preferred backend first, then fall back to CPU
     if (preferred != Backend::CPU && preferred != Backend::Auto) {
         if (try_create_session(model_path, preferred)) {
             loaded_ = true;
@@ -43,6 +54,8 @@ bool RVMMatter::load_model(const std::string &model_path, Backend preferred)
     }
 
     if (preferred == Backend::Auto || preferred != Backend::CPU) {
+        // Try all available providers in priority order
+        // Order depends on platform
         Backend priorities[] = {
 #if defined(PLATFORM_MACOS)
             Backend::CoreML,
@@ -55,7 +68,7 @@ bool RVMMatter::load_model(const std::string &model_path, Backend preferred)
         };
 
         for (Backend b : priorities) {
-            if (b == preferred) continue;
+            if (b == preferred) continue; // Already tried
             if (try_create_session(model_path, b)) {
                 loaded_ = true;
                 return true;
@@ -63,6 +76,7 @@ bool RVMMatter::load_model(const std::string &model_path, Backend preferred)
         }
     }
 
+    // Last resort: CPU only
     if (try_create_session(model_path, Backend::CPU)) {
         loaded_ = true;
         return true;
@@ -81,9 +95,11 @@ bool RVMMatter::try_create_session(const std::string &model_path, Backend backen
             GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
 
 #ifdef HAS_ONNXRUNTIME
+        // Get available providers
         auto providers = Ort::GetAvailableProviders();
 
         if (backend == Backend::CUDA) {
+            // Check if CUDA is available
             bool cuda_available = false;
             for (const auto &p : providers) {
                 if (p == "CUDAExecutionProvider") {
@@ -103,6 +119,15 @@ bool RVMMatter::try_create_session(const std::string &model_path, Backend backen
         }
 #endif
 
+#if defined(PLATFORM_WINDOWS) || defined(PLATFORM_MACOS)
+        // DirectML (Windows) and CoreML (macOS) are handled differently
+        // DirectML requires the onnxruntime-directml package
+        // CoreML is a framework link, not an ONNX EP in all versions
+        // For now, we rely on ONNX Runtime's auto-detection
+#endif
+
+        // Create the session
+        // Use wide string on Windows
 #ifdef _WIN32
         auto wpath = std::wstring(model_path.begin(), model_path.end());
         impl_->session = std::make_unique<Ort::Session>(
@@ -112,6 +137,7 @@ bool RVMMatter::try_create_session(const std::string &model_path, Backend backen
             *impl_->env, model_path.c_str(), so);
 #endif
 
+        // Get input/output names
         Ort::AllocatorWithDefaultOptions allocator;
 
         size_t num_inputs = impl_->session->GetInputCount();
@@ -142,6 +168,10 @@ bool RVMMatter::try_create_session(const std::string &model_path, Backend backen
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Recurrent state management
+// ═══════════════════════════════════════════════════════════════════
+
 void RVMMatter::reset_states()
 {
     std::lock_guard<std::mutex> lock(infer_mutex_);
@@ -152,6 +182,9 @@ void RVMMatter::reset_states()
 void RVMMatter::initialize_states(int h, int w)
 {
     (void)h; (void)w;
+    // Initialize recurrent states as [1, C, 1, 1] tensors
+    // The ONNX Expand node will broadcast them to the correct dimensions
+    // This is the key insight from our Python prototype testing
     rec_states_.clear();
 
     int64_t shape[] = {1, 1, 1, 1};
@@ -170,11 +203,19 @@ void RVMMatter::initialize_states(int h, int w)
             4
         );
 
+        // We need to keep the data alive, so copy it into the Value
+        // Actually, Ort::Value::CreateTensor doesn't copy the data
+        // We need to manage lifetime carefully
+        // For zero-initialized states, we can create new buffers each time
         rec_states_.push_back(std::move(tensor));
     }
 
     states_initialized_ = true;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Inference
+// ═══════════════════════════════════════════════════════════════════
 
 RVMMatter::InferenceResult RVMMatter::infer(
     const uint8_t *bgra_data,
@@ -192,6 +233,7 @@ RVMMatter::InferenceResult RVMMatter::infer(
     result.foreground.resize((size_t)width * height * 4);
 
     if (!loaded_ || !impl_->session) {
+        // Return empty alpha (all opaque) if model not loaded
         std::fill(result.alpha.begin(), result.alpha.end(), 1.0f);
         std::memcpy(result.foreground.data(), bgra_data, (size_t)width * height * 4);
         return result;
@@ -200,6 +242,8 @@ RVMMatter::InferenceResult RVMMatter::infer(
     auto t0 = std::chrono::high_resolution_clock::now();
 
     try {
+        // ── Step 1: Prepare input tensor ────────────────────────────
+        // Convert BGRA -> RGB, normalize to [0, 1], NCHW format
         int mh = height;
         int mw = width;
 
@@ -208,12 +252,12 @@ RVMMatter::InferenceResult RVMMatter::infer(
         for (int y = 0; y < mh; y++) {
             for (int x = 0; x < mw; x++) {
                 const uint8_t *px = bgra_data + (y * mw + x) * 4;
-                size_t idx = (size_t)(0 * mh + y) * mw + x;
-                src_data[idx] = px[2] / 255.0f;
-                idx = (size_t)(1 * mh + y) * mw + x;
-                src_data[idx] = px[1] / 255.0f;
-                idx = (size_t)(2 * mh + y) * mw + x;
-                src_data[idx] = px[0] / 255.0f;
+                size_t idx = (size_t)(0 * mh + y) * mw + x; // R channel
+                src_data[idx] = px[2] / 255.0f;           // BGR->RGB: R = px[2]
+                idx = (size_t)(1 * mh + y) * mw + x;      // G channel
+                src_data[idx] = px[1] / 255.0f;           // G = px[1]
+                idx = (size_t)(2 * mh + y) * mw + x;      // B channel
+                src_data[idx] = px[0] / 255.0f;           // B = px[0]
             }
         }
 
@@ -226,10 +270,12 @@ RVMMatter::InferenceResult RVMMatter::infer(
             4
         );
 
+        // ── Step 2: Prepare recurrent states ────────────────────────
         if (!states_initialized_ || rec_states_.empty()) {
             initialize_states(mh, mw);
         }
 
+        // ── Step 3: Prepare downsample ratio ───────────────────────
         float dsr = ratio;
         int64_t dsr_shape[] = {1};
         auto dsr_tensor = Ort::Value::CreateTensor<float>(
@@ -240,16 +286,22 @@ RVMMatter::InferenceResult RVMMatter::infer(
             1
         );
 
+        // ── Step 4: Build input array ───────────────────────────────
         std::vector<Ort::Value> inputs;
         inputs.push_back(std::move(src_tensor));
 
+        // Move recurrent states (we'll get them back from outputs)
         for (int i = 0; i < num_recurrent_states(); i++) {
+            // Need to create a copy since ONNX may consume the tensor
+            // For states, we pass them and receive updated versions
             inputs.push_back(std::move(rec_states_[i]));
         }
-        rec_states_.clear();
+        rec_states_.clear(); // Will be repopulated from outputs
 
         inputs.push_back(std::move(dsr_tensor));
 
+        // ── Step 5: Run inference ───────────────────────────────────
+        // Build C-style name arrays
         std::vector<const char*> in_names_c;
         for (const auto &n : impl_->in_names)
             in_names_c.push_back(n.c_str());
@@ -267,6 +319,13 @@ RVMMatter::InferenceResult RVMMatter::infer(
             out_names_c.size()
         );
 
+        // ── Step 6: Extract alpha and foreground ────────────────────
+        // RVM model outputs:
+        //   [0] = fgr  (foreground, [1, 3, H, W])
+        //   [1] = pha  (alpha, [1, 1, H, W])
+        //   [2-5] = r1o-r4o (updated recurrent states)
+
+        // Extract alpha
         auto &pha_tensor = outputs[1];
         auto pha_info = pha_tensor.GetTensorTypeAndShapeInfo();
         auto pha_shape = pha_info.GetShape();
@@ -275,13 +334,17 @@ RVMMatter::InferenceResult RVMMatter::infer(
         int pha_h = (int)pha_shape[2];
         int pha_w = (int)pha_shape[3];
 
+        // Apply alpha gamma and copy to result
         for (int i = 0; i < width * height; i++) {
+            // If model output size matches input, copy directly
             if (pha_h == height && pha_w == width) {
                 float a = std::clamp(pha_data[i], 0.0f, 1.0f);
                 if (alpha_gamma != 1.0f)
                     a = std::pow(a, alpha_gamma);
                 result.alpha[i] = a;
             } else {
+                // Need to resize - use nearest neighbor for now
+                // (OpenCV resize will be used in the plugin layer)
                 int sx = (int)((i % width) * (float)pha_w / width);
                 int sy = (int)((i / width) * (float)pha_h / height);
                 float a = std::clamp(pha_data[sy * pha_w + sx], 0.0f, 1.0f);
@@ -291,28 +354,33 @@ RVMMatter::InferenceResult RVMMatter::infer(
             }
         }
 
+        // Extract foreground
         auto &fgr_tensor = outputs[0];
         float *fgr_data = fgr_tensor.GetTensorMutableData<float>();
         int fgr_h = (int)fgr_tensor.GetTensorTypeAndShapeInfo().GetShape()[2];
         int fgr_w = (int)fgr_tensor.GetTensorTypeAndShapeInfo().GetShape()[3];
 
         if (fgr_h == height && fgr_w == width) {
+            // Convert RGB float -> BGRA uint8
             for (int i = 0; i < width * height; i++) {
-                result.foreground[i * 4 + 0] = (uint8_t)std::clamp(fgr_data[2 * width * height + i] * 255, 0.0f, 255.0f);
-                result.foreground[i * 4 + 1] = (uint8_t)std::clamp(fgr_data[1 * width * height + i] * 255, 0.0f, 255.0f);
-                result.foreground[i * 4 + 2] = (uint8_t)std::clamp(fgr_data[0 * width * height + i] * 255, 0.0f, 255.0f);
+                result.foreground[i * 4 + 0] = (uint8_t)std::clamp(fgr_data[2 * width * height + i] * 255, 0.0f, 255.0f); // B
+                result.foreground[i * 4 + 1] = (uint8_t)std::clamp(fgr_data[1 * width * height + i] * 255, 0.0f, 255.0f); // G
+                result.foreground[i * 4 + 2] = (uint8_t)std::clamp(fgr_data[0 * width * height + i] * 255, 0.0f, 255.0f); // R
                 result.foreground[i * 4 + 3] = 255;
             }
         } else {
+            // Use original frame as foreground if dimensions don't match
             std::memcpy(result.foreground.data(), bgra_data, (size_t)width * height * 4);
         }
 
+        // Save updated recurrent states (r1o-r4o)
         for (int i = 2; i < 2 + num_recurrent_states(); i++) {
             rec_states_.push_back(std::move(outputs[i]));
         }
 
     } catch (const Ort::Exception &e) {
         last_error_ = std::string("Inference error: ") + e.what();
+        // Return opaque alpha on error
         std::fill(result.alpha.begin(), result.alpha.end(), 1.0f);
         std::memcpy(result.foreground.data(), bgra_data, (size_t)width * height * 4);
     } catch (const std::exception &e) {
@@ -326,6 +394,10 @@ RVMMatter::InferenceResult RVMMatter::infer(
 
     return result;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Utility methods
+// ═══════════════════════════════════════════════════════════════════
 
 std::string RVMMatter::backend_name() const
 {
@@ -341,6 +413,7 @@ std::string RVMMatter::backend_name() const
 
 void RVMMatter::get_model_dimensions(int &out_h, int &out_w) const
 {
+    // RVM uses dynamic input dimensions
     out_h = 0;
     out_w = 0;
 }
