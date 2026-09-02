@@ -18,6 +18,9 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-ai-matting-pro", "en-US")
 #define blog_warn(...)  blog(LOG_WARNING, "[ai-matting-pro] " __VA_ARGS__)
 #define blog_error(...) blog(LOG_ERROR, "[ai-matting-pro] " __VA_ARGS__)
 
+// Store module data path at load time for later use
+static std::string g_module_data_path;
+
 // ═══════════════════════════════════════════════════════════════════
 // Plugin registration
 // ═══════════════════════════════════════════════════════════════════
@@ -26,6 +29,16 @@ static struct obs_source_info am_info = {};
 
 bool obs_module_load(void)
 {
+    // Store module data path for default model loading
+    obs_module_t *mod = obs_current_module();
+    if (mod) {
+        const char *dp = obs_get_module_data_path(mod);
+        if (dp) {
+            g_module_data_path = dp;
+            blog_info("module data path: %s", dp);
+        }
+    }
+
     am_info.id = "obs_ai_matting_pro";
     am_info.type = OBS_SOURCE_TYPE_FILTER;
     am_info.output_flags = OBS_SOURCE_VIDEO;
@@ -148,10 +161,9 @@ void am_update(void *data, obs_data_t *settings)
     if (mp && *mp) {
         model_path_str = mp;
     } else {
-        // Try default model from plugin data directory
-        const char *data_path = obs_module_get_data_path();
-        if (data_path) {
-            model_path_str = std::string(data_path) + "/models/rvm_mobilenetv3_fp32.onnx";
+        // Try default model from plugin data directory (stored at module load)
+        if (!g_module_data_path.empty()) {
+            model_path_str = g_module_data_path + "/models/rvm_mobilenetv3_fp32.onnx";
         }
     }
 
