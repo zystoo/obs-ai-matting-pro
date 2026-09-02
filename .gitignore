@@ -1,0 +1,25 @@
+# Build directories
+build/
+build_*/
+release/
+*.pkg
+*.dmg
+*.exe
+*.deb
+*.tar.gz
+*.zip
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Models (downloaded separately)
+data/models/*.onnx
