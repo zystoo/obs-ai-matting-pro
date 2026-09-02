@@ -37,7 +37,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get -y --no-install-recommends install build-essential cmake ninja-build pkg-config unzip curl libobs-dev libopencv-dev
+          sudo apt-get -y --no-install-recommends install build-essential cmake ninja-build pkg-config unzip curl libobs-dev
       - name: Download ONNX Runtime
         run: |
           curl -L "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" -o /tmp/ort.tgz
@@ -122,16 +122,24 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p release/obs-plugins
-          cp build/obs-ai-matting-pro.so release/obs-plugins/ || true
-          cp "${ORT_ROOT}/lib/libonnxruntime.dylib" release/obs-plugins/ || true
-          cp /tmp/obs_lib/libobs.dylib release/obs-plugins/ || true
-          tar -C release -czf "release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-macos-arm64-${{ needs.check-event.outputs.commitHash }}.tar.gz" .
+          # Create .pkg installer that installs to
+          # /Library/Application Support/obs-studio/obs-plugins/
+          mkdir -p "pkg_root/Library/Application Support/obs-studio/obs-plugins"
+          cp build/obs-ai-matting-pro.so "pkg_root/Library/Application Support/obs-studio/obs-plugins/"
+          cp "${ORT_ROOT}/lib/libonnxruntime.dylib" "pkg_root/Library/Application Support/obs-studio/obs-plugins/"
+
+          mkdir -p release
+          pkgbuild \
+            --identifier com.aimatting.obs-plugin \
+            --version ${{ needs.check-event.outputs.pluginVersion }} \
+            --install-location / \
+            --root pkg_root \
+            "release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-macos-arm64.pkg"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.check-event.outputs.pluginName }}-macos-arm64
-          path: release/*.tar.gz
+          path: release/*.pkg
 
   windows-build:
     name: Build for Windows
@@ -209,8 +217,6 @@ jobs:
           cp build/obs-ai-matting-pro.dll release/obs-plugins/64bit/ 2>/dev/null || \
           cp build/obs-ai-matting-pro.so release/obs-plugins/64bit/ 2>/dev/null || true
           cp "${ORT_ROOT}/lib/onnxruntime.dll" release/obs-plugins/64bit/ 2>/dev/null || true
-          cp /tmp/obs_app/*/bin/64bit/obs.dll release/obs-plugins/64bit/ 2>/dev/null || \
-          find /tmp/obs_app -name "obs.dll" -exec cp {} release/obs-plugins/64bit/ \; 2>/dev/null || true
           cd release && 7z a "../release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}.zip" .
 
       - uses: actions/upload-artifact@v4
