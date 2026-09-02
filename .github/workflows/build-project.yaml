@@ -120,13 +120,18 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
+      - name: Download RVM model
+        run: |
+          curl -L "https://huggingface.co/lhsbbob/segment/resolve/main/rvm_mobilenetv3_fp32.onnx" -o /tmp/rvm_model.onnx
+          ls -la /tmp/rvm_model.onnx
+
       - name: Fix dynamic library paths
         run: |
           # Remove CI-specific rpaths (they don't exist on user's machine)
           install_name_tool -delete_rpath "/tmp/ort/onnxruntime-osx-arm64-${ORT_VERSION}/lib" build/obs-ai-matting-pro.so || true
           install_name_tool -delete_rpath "/tmp/obs_lib" build/obs-ai-matting-pro.so || true
 
-          # Add @loader_path rpath (looks in the same directory as the .so file)
+          # Add @loader_path rpath (looks in the same directory as the binary)
           install_name_tool -add_rpath @loader_path build/obs-ai-matting-pro.so
 
           # Change ONNX Runtime link from @rpath to @loader_path (explicit path)
@@ -143,21 +148,51 @@ jobs:
           codesign --force --sign - build/obs-ai-matting-pro.so
           codesign --force --sign - build/libonnxruntime.dylib
 
-          # Verify
-          otool -L build/obs-ai-matting-pro.so
-
       - name: Package
         run: |
-          # Create .pkg installer that installs to
-          # /Library/Application Support/obs-studio/obs-plugins/
-          mkdir -p "pkg_root/Library/Application Support/obs-studio/obs-plugins"
-          cp build/obs-ai-matting-pro.so "pkg_root/Library/Application Support/obs-studio/obs-plugins/"
-          cp build/libonnxruntime.dylib "pkg_root/Library/Application Support/obs-studio/obs-plugins/"
+          # Create macOS .plugin bundle (standard OBS plugin format on macOS)
+          PLUGIN_DIR="pkg_root/Library/Application Support/obs-studio/plugins/obs-ai-matting-pro.plugin"
+          CONTENTS="${PLUGIN_DIR}/Contents"
 
-          # Include locale data files (required for plugin to load and display name)
-          mkdir -p "pkg_root/Library/Application Support/obs-studio/data/obs-plugins/obs-ai-matting-pro/locale"
-          cp data/locale/en-US.ini "pkg_root/Library/Application Support/obs-studio/data/obs-plugins/obs-ai-matting-pro/locale/"
+          # Create bundle structure
+          mkdir -p "${CONTENTS}/MacOS"
+          mkdir -p "${CONTENTS}/Resources/locale"
+          mkdir -p "${CONTENTS}/Resources/models"
 
+          # Copy binary (rename .so to no extension, like obs-backgroundremoval)
+          cp build/obs-ai-matting-pro.so "${CONTENTS}/MacOS/obs-ai-matting-pro"
+          cp build/libonnxruntime.dylib "${CONTENTS}/MacOS/"
+
+          # Copy locale data
+          cp data/locale/en-US.ini "${CONTENTS}/Resources/locale/"
+
+          # Copy RVM model
+          cp /tmp/rvm_model.onnx "${CONTENTS}/Resources/models/"
+
+          # Create Info.plist (required for macOS bundle)
+          cat > "${CONTENTS}/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleIdentifier</key>
+              <string>com.aimatting.obs-plugin</string>
+              <key>CFBundleVersion</key>
+              <string>0.1.0</string>
+              <key>CFBundlePackageType</key>
+              <string>BNDL</string>
+              <key>CFBundleExecutable</key>
+              <string>obs-ai-matting-pro</string>
+              <key>CFBundleName</key>
+              <string>AI Matting Pro</string>
+          </dict>
+          </plist>
+          PLIST
+
+          # Code-sign the entire bundle
+          codesign --force --sign - --deep "${PLUGIN_DIR}"
+
+          # Create .pkg installer
           mkdir -p release
           pkgbuild \
             --identifier com.aimatting.obs-plugin \
@@ -240,6 +275,12 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
+      - name: Download RVM model
+        shell: bash
+        run: |
+          curl -L "https://huggingface.co/lhsbbob/segment/resolve/main/rvm_mobilenetv3_fp32.onnx" -o /tmp/rvm_model.onnx
+          ls -la /tmp/rvm_model.onnx
+
       - name: Package
         shell: bash
         run: |
@@ -250,6 +291,9 @@ jobs:
           # Include locale data files
           mkdir -p release/data/obs-plugins/obs-ai-matting-pro/locale
           cp data/locale/en-US.ini release/data/obs-plugins/obs-ai-matting-pro/locale/
+          # Include RVM model
+          mkdir -p release/data/obs-plugins/obs-ai-matting-pro/models
+          cp /tmp/rvm_model.onnx release/data/obs-plugins/obs-ai-matting-pro/models/
           cd release && 7z a "../release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}.zip" .
 
       - uses: actions/upload-artifact@v4

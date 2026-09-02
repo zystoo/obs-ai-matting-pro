@@ -18,6 +18,10 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-ai-matting-pro", "en-US")
 #define blog_warn(...)  blog(LOG_WARNING, "[ai-matting-pro] " __VA_ARGS__)
 #define blog_error(...) blog(LOG_ERROR, "[ai-matting-pro] " __VA_ARGS__)
 
+// ═══════════════════════════════════════════════════════════════════
+// Plugin registration
+// ═══════════════════════════════════════════════════════════════════
+
 static struct obs_source_info am_info = {};
 
 bool obs_module_load(void)
@@ -48,35 +52,52 @@ const char *obs_module_name(void)
     return "AI Matting Pro";
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Filter name
+// ═══════════════════════════════════════════════════════════════════
+
 const char *am_get_name(void *type_data)
 {
     (void)type_data;
     return obs_module_text("FilterName");
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Create filter instance
+// ═══════════════════════════════════════════════════════════════════
+
 void *am_create(obs_data_t *settings, obs_source_t *source)
 {
     auto *f = new am_filter();
     f->context = source;
 
+    // Initialize GPU resources
     obs_enter_graphics();
     f->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
     f->bg_texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
     obs_leave_graphics();
 
+    // Initialize RVM engine
     f->matter = std::make_unique<RVMMatter>();
 
+    // Initialize auto LUT
     for (int c = 0; c < 3; c++)
         for (int i = 0; i < 256; i++)
             f->auto_lut[c][i] = (uint8_t)i;
 
+    // Start worker thread
     f->worker = std::thread(am_worker_loop, f);
 
+    // Apply initial settings
     am_update(f, settings);
 
     blog_info("filter instance created");
     return f;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Destroy filter instance
+// ═══════════════════════════════════════════════════════════════════
 
 void am_destroy(void *data)
 {
@@ -101,6 +122,10 @@ void am_destroy(void *data)
     blog_info("filter instance destroyed");
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Update settings
+// ═══════════════════════════════════════════════════════════════════
+
 void am_update(void *data, obs_data_t *settings)
 {
     auto *f = static_cast<am_filter *>(data);
@@ -117,31 +142,42 @@ void am_update(void *data, obs_data_t *settings)
     f->match_strength.store(obs_data_get_double(settings, "match_strength"));
     f->solid_color = (uint32_t)obs_data_get_int(settings, "solid_color");
 
+    // Model path - use default bundled model if not set
     const char *mp = obs_data_get_string(settings, "model_path");
+    std::string model_path_str;
     if (mp && *mp) {
-        std::string new_path = mp;
-        if (new_path != f->model_path) {
-            f->model_path = new_path;
-            if (f->matter) {
-                bool ok = f->matter->load_model(f->model_path);
-                f->backend_name = ok ? f->matter->backend_name() : "failed";
-                if (ok) {
-                    blog_info("model loaded: %s (backend: %s)",
-                              f->model_path.c_str(),
-                              f->backend_name.c_str());
-                } else {
-                    blog_error("model load failed: %s",
-                               f->matter->last_error().c_str());
-                }
+        model_path_str = mp;
+    } else {
+        // Try default model from plugin data directory
+        const char *data_path = obs_module_get_data_path();
+        if (data_path) {
+            model_path_str = std::string(data_path) + "/models/rvm_mobilenetv3_fp32.onnx";
+        }
+    }
+
+    if (!model_path_str.empty() && model_path_str != f->model_path) {
+        f->model_path = model_path_str;
+        if (f->matter) {
+            bool ok = f->matter->load_model(f->model_path);
+            f->backend_name = ok ? f->matter->backend_name() : "failed";
+            if (ok) {
+                blog_info("model loaded: %s (backend: %s)",
+                          f->model_path.c_str(),
+                          f->backend_name.c_str());
+            } else {
+                blog_error("model load failed: %s",
+                           f->matter->last_error().c_str());
             }
         }
     }
 
+    // Background source for auto-match
     const char *bn = obs_data_get_string(settings, "bg_source");
     if (bn) {
         std::string new_bg = bn;
         if (new_bg != f->bg_name) {
             f->bg_name = new_bg;
+            // Will be resolved in render
             if (f->bg_weak) {
                 obs_weak_source_release(f->bg_weak);
                 f->bg_weak = nullptr;
@@ -149,6 +185,10 @@ void am_update(void *data, obs_data_t *settings)
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Video render (main processing pipeline)
+// ═══════════════════════════════════════════════════════════════════
 
 void am_render(void *data, gs_effect_t *effect)
 {
@@ -169,6 +209,7 @@ void am_render(void *data, gs_effect_t *effect)
         return;
     }
 
+    // Resize GPU resources if dimensions changed
     if (w != f->width || h != f->height) {
         f->width = w;
         f->height = h;
@@ -179,9 +220,10 @@ void am_render(void *data, gs_effect_t *effect)
         f->out_tex = gs_texture_create(w, h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
         obs_leave_graphics();
         f->bgra_frame.assign((size_t)w * h * 4, 0);
-        f->prev_alpha_valid = false;
+        f->prev_alpha_valid = false; // Reset temporal smoothing
     }
 
+    // ── Step 1: Render target source to texrender ─────────────────
     gs_texrender_reset(f->texrender);
     if (!gs_texrender_begin(f->texrender, w, h)) {
         obs_source_skip_video_filter(f->context);
@@ -198,6 +240,7 @@ void am_render(void *data, gs_effect_t *effect)
     gs_blend_state_pop();
     gs_texrender_end(f->texrender);
 
+    // ── Step 2: Copy GPU texture to CPU ──────────────────────────
     gs_stage_texture(f->stage, gs_texrender_get_texture(f->texrender));
     uint8_t *mapped = nullptr;
     uint32_t linesize = 0;
@@ -206,11 +249,13 @@ void am_render(void *data, gs_effect_t *effect)
         return;
     }
 
+    // Copy to our buffer
     for (uint32_t y = 0; y < h; y++)
         std::memcpy(f->bgra_frame.data() + (size_t)y * w * 4,
                     mapped + (size_t)y * linesize, (size_t)w * 4);
     gs_stagesurface_unmap(f->stage);
 
+    // ── Step 3: Send frame to worker thread ──────────────────────
     {
         std::lock_guard<std::mutex> lk(f->in_mtx);
         f->worker_input = f->bgra_frame;
@@ -220,6 +265,7 @@ void am_render(void *data, gs_effect_t *effect)
     }
     f->in_cv.notify_one();
 
+    // ── Step 4: Get latest alpha from worker (non-blocking) ──────
     std::vector<float> alpha;
     std::vector<uint8_t> foreground;
     int aw = 0, ah = 0;
@@ -236,10 +282,15 @@ void am_render(void *data, gs_effect_t *effect)
         }
     }
 
+    // ── Step 5: Composite output ─────────────────────────────────
     if (!have_output || alpha.empty()) {
+        // No output yet - pass through original frame
         gs_texture_set_image(f->out_tex, f->bgra_frame.data(), w * 4, false);
     } else {
+        // Apply post-processing
+        // Resize alpha if dimensions don't match
         if (aw != (int)w || ah != (int)h) {
+            // Nearest-neighbor resize for now
             std::vector<float> resized((size_t)w * h);
             for (uint32_t y = 0; y < h; y++) {
                 for (uint32_t x = 0; x < w; x++) {
@@ -253,6 +304,7 @@ void am_render(void *data, gs_effect_t *effect)
             alpha = std::move(resized);
         }
 
+        // Temporal smoothing
         float ts = (float)f->temporal_smooth.load();
         if (ts > 0.0 && f->prev_alpha_valid && f->prev_alpha.size() == alpha.size()) {
             for (size_t i = 0; i < alpha.size(); i++)
@@ -261,16 +313,19 @@ void am_render(void *data, gs_effect_t *effect)
         f->prev_alpha = alpha;
         f->prev_alpha_valid = true;
 
+        // Edge feathering
         int feather = (int)f->feather_radius.load();
         if (feather > 0)
             am_feather_alpha(alpha.data(), (int)w, (int)h, feather);
 
+        // Composite
         am_composite(f, f->bgra_frame.data(), alpha.data(),
                      foreground.data(), (int)w, (int)h,
                      f->mode.load());
         gs_texture_set_image(f->out_tex, f->bgra_frame.data(), w * 4, false);
     }
 
+    // ── Step 6: Draw output texture ───────────────────────────────
     int mode = f->mode.load();
     gs_effect_t *def = obs_get_base_effect(
         mode == 0 ? OBS_EFFECT_PREMULTIPLIED_ALPHA : OBS_EFFECT_DEFAULT);
@@ -281,14 +336,20 @@ void am_render(void *data, gs_effect_t *effect)
     while (gs_effect_loop(def, "Draw"))
         gs_draw_sprite(f->out_tex, 0, w, h);
 
+    // ── Auto light match: sample background ───────────────────────
     if (f->auto_match.load() && mode == 0) {
         am_sample_background(f);
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Worker thread - runs RVM inference asynchronously
+// ═══════════════════════════════════════════════════════════════════
+
 void am_worker_loop(am_filter *f)
 {
     while (!f->stop) {
+        // Wait for input
         std::vector<uint8_t> input;
         int w = 0, h = 0;
 
@@ -308,6 +369,7 @@ void am_worker_loop(am_filter *f)
         }
 
         if (!f->matter || !f->matter->is_loaded()) {
+            // Model not loaded - output transparent (all opaque)
             std::lock_guard<std::mutex> lk(f->out_mtx);
             f->worker_alpha.assign((size_t)w * h, 1.0f);
             f->worker_fg = input;
@@ -317,11 +379,13 @@ void am_worker_loop(am_filter *f)
             continue;
         }
 
+        // Run inference
         float ratio = (float)f->detail_ratio.load() / 100.0f;
         float ag = (float)f->alpha_gamma.load();
 
         auto result = f->matter->infer(input.data(), w, h, ratio, ag);
 
+        // Store output
         {
             std::lock_guard<std::mutex> lk(f->out_mtx);
             f->worker_alpha = std::move(result.alpha);
@@ -334,17 +398,24 @@ void am_worker_loop(am_filter *f)
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Compositing: blend foreground with background based on mode
+// ═══════════════════════════════════════════════════════════════════
+
 void am_composite(am_filter *f, const uint8_t *bgra,
                   const float *alpha, const uint8_t *fg,
                   int w, int h, int mode)
 {
+    // Apply auto LUT if auto-match is enabled
     bool use_lut = f->auto_match.load() && mode == 0;
 
     if (mode == 0) {
+        // Transparent mode: output premultiplied alpha
         for (int i = 0; i < w * h; i++) {
             float a = alpha[i];
             uint8_t alpha_byte = (uint8_t)(a * 255 + 0.5f);
 
+            // Use model foreground if available, otherwise use original
             uint8_t b = fg ? fg[i * 4 + 0] : bgra[i * 4 + 0];
             uint8_t g = fg ? fg[i * 4 + 1] : bgra[i * 4 + 1];
             uint8_t r = fg ? fg[i * 4 + 2] : bgra[i * 4 + 2];
@@ -355,18 +426,23 @@ void am_composite(am_filter *f, const uint8_t *bgra,
                 r = f->auto_lut[2][r];
             }
 
+            // Premultiply alpha
             const_cast<uint8_t*>(bgra)[i * 4 + 0] = (uint8_t)(b * a + 0.5f);
             const_cast<uint8_t*>(bgra)[i * 4 + 1] = (uint8_t)(g * a + 0.5f);
             const_cast<uint8_t*>(bgra)[i * 4 + 2] = (uint8_t)(r * a + 0.5f);
             const_cast<uint8_t*>(bgra)[i * 4 + 3] = alpha_byte;
         }
     } else if (mode == 1) {
+        // Blur mode: blend original with blurred background
+        // (In production, use Gaussian or bilateral filter)
         for (int i = 0; i < w * h; i++) {
             float a = alpha[i];
             float bg_b = bgra[i * 4 + 0];
             float bg_g = bgra[i * 4 + 1];
             float bg_r = bgra[i * 4 + 2];
 
+            // Simple darkening for blur effect
+            // (Full Gaussian blur would be done on GPU in production)
             bg_b *= 0.5f;
             bg_g *= 0.5f;
             bg_r *= 0.5f;
@@ -384,6 +460,7 @@ void am_composite(am_filter *f, const uint8_t *bgra,
             const_cast<uint8_t*>(bgra)[i * 4 + 3] = 255;
         }
     } else {
+        // Solid color mode: composite over solid color
         uint32_t sc = f->solid_color;
         uint8_t sc_b = (sc >> 16) & 0xFF;
         uint8_t sc_g = (sc >> 8) & 0xFF;
@@ -406,13 +483,21 @@ void am_composite(am_filter *f, const uint8_t *bgra,
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Post-processing: alpha feathering (edge smoothing)
+// ═══════════════════════════════════════════════════════════════════
+
 void am_feather_alpha(float *alpha, int w, int h, int radius)
 {
     if (radius <= 0 || w <= 0 || h <= 0) return;
 
+    // Create a copy for box blur
     std::vector<float> blurred(alpha, alpha + (size_t)w * h);
+
+    // Simple separable box blur
     std::vector<float> temp((size_t)w * h);
 
+    // Horizontal pass
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             float sum = 0;
@@ -428,6 +513,7 @@ void am_feather_alpha(float *alpha, int w, int h, int radius)
         }
     }
 
+    // Vertical pass
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             float sum = 0;
@@ -443,6 +529,7 @@ void am_feather_alpha(float *alpha, int w, int h, int radius)
         }
     }
 
+    // Blend: only feather edge regions (0.1 < alpha < 0.9)
     for (int i = 0; i < w * h; i++) {
         float a = alpha[i];
         if (a > 0.1f && a < 0.9f) {
@@ -451,10 +538,15 @@ void am_feather_alpha(float *alpha, int w, int h, int radius)
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Auto light match: sample background source
+// ═══════════════════════════════════════════════════════════════════
+
 void am_sample_background(am_filter *f)
 {
     if (f->bg_name.empty()) return;
 
+    // Resolve background source
     if (!f->bg_weak) {
         obs_source_t *bg = obs_get_source_by_name(f->bg_name.c_str());
         if (bg) {
@@ -468,6 +560,7 @@ void am_sample_background(am_filter *f)
     obs_source_t *bg = obs_weak_source_get_source(f->bg_weak);
     if (!bg) return;
 
+    // Render background at small size for sampling
     const int SW = 64, SH = 36;
     if (!f->bg_stage || f->bg_stage_width != SW) {
         obs_enter_graphics();
@@ -495,13 +588,14 @@ void am_sample_background(am_filter *f)
     uint8_t *map = nullptr;
     uint32_t linesize = 0;
     if (gs_stagesurface_map(f->bg_stage, &map, &linesize)) {
+        // Compute mean BGR
         double sum[3] = {0, 0, 0};
         int count = 0;
         for (int y = 0; y < SH; y++) {
             for (int x = 0; x < SW; x++) {
-                sum[0] += map[y * linesize + x * 4 + 0];
-                sum[1] += map[y * linesize + x * 4 + 1];
-                sum[2] += map[y * linesize + x * 4 + 2];
+                sum[0] += map[y * linesize + x * 4 + 0]; // B
+                sum[1] += map[y * linesize + x * 4 + 1]; // G
+                sum[2] += map[y * linesize + x * 4 + 2]; // R
                 count++;
             }
         }
@@ -513,6 +607,7 @@ void am_sample_background(am_filter *f)
             (float)(sum[2] / count)
         };
 
+        // EMA smoothing
         float ema = 0.1f;
         f->bg_mean[0] = ema * bg_m[0] + (1 - ema) * f->bg_mean[0];
         f->bg_mean[1] = ema * bg_m[1] + (1 - ema) * f->bg_mean[1];
@@ -527,11 +622,13 @@ void am_sample_background(am_filter *f)
 
 void am_update_auto_lut(am_filter *f)
 {
+    // Compute gain to match foreground to background lighting
+    // This is a simplified version of the obs-ai-matting approach
     float strength = (float)f->match_strength.load();
 
     for (int c = 0; c < 3; c++) {
         float target = f->bg_mean[c];
-        if (target < 1.0f) target = 128.0f;
+        if (target < 1.0f) target = 128.0f; // Default to mid-gray
 
         float gain = 1.0f + strength * ((target - 128.0f) / 128.0f);
         gain = std::clamp(gain, 0.5f, 2.0f);
@@ -543,6 +640,10 @@ void am_update_auto_lut(am_filter *f)
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// UI: Properties panel
+// ═══════════════════════════════════════════════════════════════════
+
 static bool am_mode_changed(obs_properties_t *props,
                             obs_property_t *p,
                             obs_data_t *settings)
@@ -550,14 +651,19 @@ static bool am_mode_changed(obs_properties_t *props,
     (void)p;
     int mode = (int)obs_data_get_int(settings, "mode");
 
+    // Show auto-match only in transparent mode
     obs_property_set_visible(
         obs_properties_get(props, "auto_match"), mode == 0);
     obs_property_set_visible(
         obs_properties_get(props, "bg_source"), mode == 0);
     obs_property_set_visible(
         obs_properties_get(props, "match_strength"), mode == 0);
+
+    // Show solid color only in solid mode
     obs_property_set_visible(
         obs_properties_get(props, "solid_color"), mode == 2);
+
+    // Show blur only in blur mode
     obs_property_set_visible(
         obs_properties_get(props, "blur"), mode == 1);
 
@@ -569,6 +675,7 @@ obs_properties_t *am_get_properties(void *data)
     auto *f = static_cast<am_filter *>(data);
     obs_properties_t *p = obs_properties_create();
 
+    // ── Mode selection ─────────────────────────────────────────────
     obs_property_t *m = obs_properties_add_list(p, "mode",
         obs_module_text("Mode"),
         OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
@@ -577,27 +684,35 @@ obs_properties_t *am_get_properties(void *data)
     obs_property_list_add_int(m, obs_module_text("Mode.SolidColor"), 2);
     obs_property_set_modified_callback(m, am_mode_changed);
 
+    // ── Blur strength ─────────────────────────────────────────────
     obs_properties_add_float_slider(p, "blur",
         obs_module_text("BlurStrength"), 4, 60, 1);
 
+    // ── Solid color ───────────────────────────────────────────────
     obs_properties_add_color(p, "solid_color",
         obs_module_text("SolidColor"));
 
+    // ── Auto light match ──────────────────────────────────────────
     obs_properties_add_bool(p, "auto_match",
         obs_module_text("AutoMatch"));
 
+    // Background source for auto-match
     obs_property_t *bl = obs_properties_add_list(p, "bg_source",
         obs_module_text("BgSource"),
         OBS_COMBO_TYPE_EDITABLE, OBS_COMBO_FORMAT_STRING);
     obs_property_list_add_string(bl,
         obs_module_text("BgSource.None"), "");
 
+    // Enumerate sources for background
     if (f && f->context) {
+        // Would enumerate scenes and sources here
+        // (omitted for brevity - same as obs-ai-matting)
     }
 
     obs_properties_add_float_slider(p, "match_strength",
         obs_module_text("MatchStrength"), 0.0, 1.0, 0.05);
 
+    // ── Alpha / quality settings ──────────────────────────────────
     obs_properties_add_float_slider(p, "alpha_gamma",
         obs_module_text("AlphaGamma"), 0.4, 1.5, 0.05);
 
@@ -615,6 +730,7 @@ obs_properties_t *am_get_properties(void *data)
     obs_property_list_add_int(d, obs_module_text("Detail.Balanced"), 75);
     obs_property_list_add_int(d, obs_module_text("Detail.Max"), 100);
 
+    // ── Advanced settings ─────────────────────────────────────────
     obs_properties_t *adv = obs_properties_create();
 
     obs_properties_add_float_slider(adv, "temporal_smooth",
@@ -627,13 +743,18 @@ obs_properties_t *am_get_properties(void *data)
         obs_module_text("AdvancedSettings"),
         OBS_GROUP_NORMAL, adv);
 
+    // ── Model path ────────────────────────────────────────────────
     obs_properties_add_path(p, "model_path",
         obs_module_text("ModelPath"),
         OBS_PATH_FILE,
         obs_module_text("ModelFilter"),
         nullptr);
 
+    // ── Backend info ───────────────────────────────────────────────
     if (f && f->matter && f->matter->is_loaded()) {
+        std::string info = "Backend: " + f->backend_name +
+                           " | Inference: " +
+                           std::to_string(f->last_inference_ms) + "ms";
         obs_properties_add_text(p, "backend_info",
             obs_module_text("BackendInfo"),
             OBS_TEXT_DEFAULT);
@@ -641,6 +762,10 @@ obs_properties_t *am_get_properties(void *data)
 
     return p;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Default settings
+// ═══════════════════════════════════════════════════════════════════
 
 void am_get_defaults(obs_data_t *settings)
 {
