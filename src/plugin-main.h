@@ -16,6 +16,7 @@
 
 struct am_filter {
     obs_source_t *context = nullptr;
+
     gs_texrender_t *texrender = nullptr;
     gs_stagesurf_t *stage = nullptr;
     gs_texture_t *out_tex = nullptr;

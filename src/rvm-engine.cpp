@@ -1,5 +1,8 @@
 #include "rvm-engine.h"
 
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+
 #include <onnxruntime_cxx_api.h>
 
 #include <cstring>
@@ -12,6 +15,7 @@ struct RVMMatter::Impl {
     std::unique_ptr<Ort::Env> env;
     std::unique_ptr<Ort::Session> session;
     Ort::MemoryInfo mem_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
     std::vector<std::string> in_names;
     std::vector<std::string> out_names;
 };
@@ -147,17 +151,28 @@ void RVMMatter::reset_states()
 
 void RVMMatter::initialize_states(int h, int w)
 {
+    (void)h; (void)w;
     rec_states_.clear();
+
     int64_t shape[] = {1, 1, 1, 1};
 
     for (int i = 0; i < num_recurrent_states(); i++) {
         int ch = rec_channels(i);
         shape[1] = ch;
+
         std::vector<float> data(ch, 0.0f);
+
         auto tensor = Ort::Value::CreateTensor<float>(
-            impl_->mem_info, data.data(), data.size(), shape, 4);
+            impl_->mem_info,
+            data.data(),
+            data.size(),
+            shape,
+            4
+        );
+
         rec_states_.push_back(std::move(tensor));
     }
+
     states_initialized_ = true;
 }
 
@@ -204,7 +219,12 @@ RVMMatter::InferenceResult RVMMatter::infer(
 
         int64_t src_shape[] = {1, 3, mh, mw};
         auto src_tensor = Ort::Value::CreateTensor<float>(
-            impl_->mem_info, src_data.data(), src_data.size(), src_shape, 4);
+            impl_->mem_info,
+            src_data.data(),
+            src_data.size(),
+            src_shape,
+            4
+        );
 
         if (!states_initialized_ || rec_states_.empty()) {
             initialize_states(mh, mw);
@@ -213,7 +233,12 @@ RVMMatter::InferenceResult RVMMatter::infer(
         float dsr = ratio;
         int64_t dsr_shape[] = {1};
         auto dsr_tensor = Ort::Value::CreateTensor<float>(
-            impl_->mem_info, &dsr, 1, dsr_shape, 1);
+            impl_->mem_info,
+            &dsr,
+            1,
+            dsr_shape,
+            1
+        );
 
         std::vector<Ort::Value> inputs;
         inputs.push_back(std::move(src_tensor));
@@ -235,8 +260,12 @@ RVMMatter::InferenceResult RVMMatter::infer(
 
         auto outputs = impl_->session->Run(
             Ort::RunOptions{nullptr},
-            in_names_c.data(), inputs.data(), inputs.size(),
-            out_names_c.data(), out_names_c.size());
+            in_names_c.data(),
+            inputs.data(),
+            inputs.size(),
+            out_names_c.data(),
+            out_names_c.size()
+        );
 
         auto &pha_tensor = outputs[1];
         auto pha_info = pha_tensor.GetTensorTypeAndShapeInfo();

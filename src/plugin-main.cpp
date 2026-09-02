@@ -50,6 +50,7 @@ const char *obs_module_name(void)
 
 const char *am_get_name(void *type_data)
 {
+    (void)type_data;
     return obs_module_text("FilterName");
 }
 
@@ -360,8 +361,6 @@ void am_composite(am_filter *f, const uint8_t *bgra,
             const_cast<uint8_t*>(bgra)[i * 4 + 3] = alpha_byte;
         }
     } else if (mode == 1) {
-        int blur = (int)f->blur_strength.load();
-
         for (int i = 0; i < w * h; i++) {
             float a = alpha[i];
             float bg_b = bgra[i * 4 + 0];
@@ -412,8 +411,6 @@ void am_feather_alpha(float *alpha, int w, int h, int radius)
     if (radius <= 0 || w <= 0 || h <= 0) return;
 
     std::vector<float> blurred(alpha, alpha + (size_t)w * h);
-
-    int ksize = radius * 2 + 1;
     std::vector<float> temp((size_t)w * h);
 
     for (int y = 0; y < h; y++) {
@@ -595,6 +592,9 @@ obs_properties_t *am_get_properties(void *data)
     obs_property_list_add_string(bl,
         obs_module_text("BgSource.None"), "");
 
+    if (f && f->context) {
+    }
+
     obs_properties_add_float_slider(p, "match_strength",
         obs_module_text("MatchStrength"), 0.0, 1.0, 0.05);
 
@@ -634,12 +634,9 @@ obs_properties_t *am_get_properties(void *data)
         nullptr);
 
     if (f && f->matter && f->matter->is_loaded()) {
-        std::string info = "Backend: " + f->backend_name +
-                           " | Inference: " +
-                           std::to_string(f->last_inference_ms) + "ms";
         obs_properties_add_text(p, "backend_info",
             obs_module_text("BackendInfo"),
-            OBS_TEXT_INFO);
+            OBS_TEXT_DEFAULT);
     }
 
     return p;
