@@ -128,6 +128,10 @@ jobs:
           cp build/obs-ai-matting-pro.so "pkg_root/Library/Application Support/obs-studio/obs-plugins/"
           cp "${ORT_ROOT}/lib/libonnxruntime.dylib" "pkg_root/Library/Application Support/obs-studio/obs-plugins/"
 
+          # Include locale data files (required for plugin to load and display name)
+          mkdir -p "pkg_root/Library/Application Support/obs-studio/data/obs-plugins/obs-ai-matting-pro/locale"
+          cp data/locale/en-US.ini "pkg_root/Library/Application Support/obs-studio/data/obs-plugins/obs-ai-matting-pro/locale/"
+
           mkdir -p release
           pkgbuild \
             --identifier com.aimatting.obs-plugin \
@@ -217,6 +221,9 @@ jobs:
           cp build/obs-ai-matting-pro.dll release/obs-plugins/64bit/ 2>/dev/null || \
           cp build/obs-ai-matting-pro.so release/obs-plugins/64bit/ 2>/dev/null || true
           cp "${ORT_ROOT}/lib/onnxruntime.dll" release/obs-plugins/64bit/ 2>/dev/null || true
+          # Include locale data files
+          mkdir -p release/data/obs-plugins/obs-ai-matting-pro/locale
+          cp data/locale/en-US.ini release/data/obs-plugins/obs-ai-matting-pro/locale/
           cd release && 7z a "../release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}.zip" .
 
       - uses: actions/upload-artifact@v4
