@@ -52,6 +52,7 @@ jobs:
           curl -L "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz" -o /tmp/ort.tgz
           mkdir -p /tmp/ort
           tar -xzf /tmp/ort.tgz -C /tmp/ort
+          ln -s lib "/tmp/ort/onnxruntime-osx-arm64-${ORT_VERSION}/lib64" 2>/dev/null || true
           echo "ORT_ROOT=/tmp/ort/onnxruntime-osx-arm64-${ORT_VERSION}" >> $GITHUB_ENV
 
       - name: Configure
@@ -69,6 +70,7 @@ jobs:
         run: |
           cmake --install build --config ${{ needs.check-event.outputs.config }} --prefix build_prefix --strip
           mkdir -p release
+          cp "${ORT_ROOT}/lib/libonnxruntime.dylib" build_prefix/obs-plugins/ || true
           tar -C build_prefix -czf "release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-macos-arm64-${{ needs.check-event.outputs.commitHash }}.tar.gz" .
 
       - uses: actions/upload-artifact@v4
@@ -119,6 +121,7 @@ jobs:
           cmake --install build --config ${{ needs.check-event.outputs.config }} --prefix build_prefix --strip
           mkdir -p release
           cp "${ORT_ROOT}/lib/onnxruntime.dll" build_prefix/obs-plugins/64bit/ || true
+          cp "${ORT_ROOT}/lib/onnxruntime.lib" build_prefix/ || true
           cd build_prefix && 7z a "../release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}.zip" .
 
       - uses: actions/upload-artifact@v4
@@ -151,6 +154,7 @@ jobs:
           curl -L "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" -o /tmp/ort.tgz
           mkdir -p /tmp/ort
           tar -xzf /tmp/ort.tgz -C /tmp/ort
+          ln -s lib "/tmp/ort/onnxruntime-linux-x64-${ORT_VERSION}/lib64" 2>/dev/null || true
           echo "ORT_ROOT=/tmp/ort/onnxruntime-linux-x64-${ORT_VERSION}" >> $GITHUB_ENV
 
       - name: Clone OBS plugin template cmake
