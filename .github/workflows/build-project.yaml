@@ -41,6 +41,7 @@ jobs:
       - name: Clone OBS plugin template cmake
         run: |
           git clone --depth=1 https://github.com/obsproject/obs-plugintemplate.git /tmp/template
+          mkdir -p cmake
           cp -r /tmp/template/cmake/* cmake/
           cp /tmp/template/.cmake-format.yaml .cmake-format.yaml || true
 
@@ -79,6 +80,7 @@ jobs:
         shell: bash
         run: |
           git clone --depth=1 https://github.com/obsproject/obs-plugintemplate.git /tmp/template
+          mkdir -p cmake
           cp -r /tmp/template/cmake/* cmake/
 
       - name: Configure
@@ -121,6 +123,7 @@ jobs:
       - name: Clone OBS plugin template cmake
         run: |
           git clone --depth=1 https://github.com/obsproject/obs-plugintemplate.git /tmp/template
+          mkdir -p cmake
           cp -r /tmp/template/cmake/* cmake/
 
       - name: Configure
