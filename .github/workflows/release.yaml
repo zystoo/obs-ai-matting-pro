@@ -1,0 +1,59 @@
+name: Release
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          filter: blob:none
+          fetch-depth: 0
+      - name: Validate tag matches VERSION
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          if [ "$GITHUB_REF_NAME" != "$VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match VERSION file ($VERSION)"
+            exit 1
+          fi
+          echo "Tag matches VERSION: $VERSION"
+
+  build:
+    name: Build All Platforms
+    needs: validate
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate Checksums
+        working-directory: release-assets
+        run: |
+          echo "### SHA256 Checksums" > CHECKSUMS.txt
+          echo "" >> CHECKSUMS.txt
+          for file in *.zip *.tar.gz *.deb *.pkg; do
+            [ -f "$file" ] || continue
+            echo "- \`${file}\`: \`$(sha256sum "$file" | cut -d ' ' -f 1)\`" >> CHECKSUMS.txt
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          tag_name: ${{ github.ref_name }}
+          name: AI Matting Pro ${{ github.ref_name }}
+          generate_notes: true
+          body_path: release-assets/CHECKSUMS.txt
+          files: release-assets/*

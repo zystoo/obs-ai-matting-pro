@@ -1,0 +1,148 @@
+name: Build Project
+on:
+  workflow_call:
+
+jobs:
+  check-event:
+    name: Check GitHub Event Data
+    runs-on: ubuntu-24.04
+    outputs:
+      package: ${{ steps.check.outputs.package }}
+      codesign: ${{ steps.check.outputs.codesign }}
+      config: ${{ steps.check.outputs.config }}
+      pluginName: ${{ steps.setup.outputs.pluginName }}
+      pluginVersion: ${{ steps.setup.outputs.pluginVersion }}
+      commitHash: ${{ steps.setup.outputs.commitHash }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: setup
+        run: |
+          echo "pluginName=$(jq -r '.name' buildspec.json)" >> "$GITHUB_OUTPUT"
+          echo "pluginVersion=$(jq -r '.version' buildspec.json)" >> "$GITHUB_OUTPUT"
+          echo "commitHash=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - id: check
+        run: |
+          echo "package=true" >> "$GITHUB_OUTPUT"
+          echo "codesign=false" >> "$GITHUB_OUTPUT"
+          echo "config=RelWithDebInfo" >> "$GITHUB_OUTPUT"
+
+  macos-build:
+    name: Build for macOS
+    runs-on: macos-14
+    needs: check-event
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Clone OBS plugin template cmake
+        run: |
+          git clone --depth=1 https://github.com/obsproject/obs-plugintemplate.git /tmp/template
+          cp -r /tmp/template/cmake/* cmake/
+          cp /tmp/template/.cmake-format.yaml .cmake-format.yaml || true
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="13.0" \
+            -DCMAKE_BUILD_TYPE=${{ needs.check-event.outputs.config }}
+
+      - name: Build
+        run: cmake --build build --config ${{ needs.check-event.outputs.config }} --parallel
+
+      - name: Package
+        run: |
+          cmake --install build --config ${{ needs.check-event.outputs.config }} --prefix build_prefix --strip
+          mkdir -p release
+          tar -C build_prefix -czf "release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-macos-universal-${{ needs.check-event.outputs.commitHash }}.tar.gz" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-macos-universal
+          path: release/
+
+  windows-build:
+    name: Build for Windows
+    runs-on: windows-2022
+    needs: check-event
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Clone OBS plugin template cmake
+        shell: bash
+        run: |
+          git clone --depth=1 https://github.com/obsproject/obs-plugintemplate.git /tmp/template
+          cp -r /tmp/template/cmake/* cmake/
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=${{ needs.check-event.outputs.config }}
+
+      - name: Build
+        run: cmake --build build --config ${{ needs.check-event.outputs.config }} --parallel
+
+      - name: Package
+        run: |
+          cmake --install build --config ${{ needs.check-event.outputs.config }} --prefix build_prefix --strip
+          mkdir release
+          Compress-Archive -Path build_prefix/* -DestinationPath "release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-windows-x64
+          path: release/
+
+  linux-build:
+    name: Build for Linux
+    runs-on: ubuntu-24.04
+    needs: check-event
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y --no-install-recommends install \
+            build-essential ca-certificates cmake git \
+            libobs-dev libonnxruntime-dev \
+            libopencv-dev pkg-config ninja-build
+
+      - name: Clone OBS plugin template cmake
+        run: |
+          git clone --depth=1 https://github.com/obsproject/obs-plugintemplate.git /tmp/template
+          cp -r /tmp/template/cmake/* cmake/
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ needs.check-event.outputs.config }} \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCPACK_GENERATOR=DEB
+
+      - name: Build
+        run: cmake --build build --config ${{ needs.check-event.outputs.config }} --parallel
+
+      - name: Package
+        run: |
+          cmake --install build --config ${{ needs.check-event.outputs.config }} --prefix build_prefix --strip
+          mkdir -p release
+          cd build && cpack -G DEB
+          cp *.deb ../release/ || true
+          cd ..
+          tar -C build_prefix -czf "release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-linux-x64-${{ needs.check-event.outputs.commitHash }}.tar.gz" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-linux-x64
+          path: release/
