@@ -120,11 +120,6 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Download RVM model
-        run: |
-          curl -L "https://huggingface.co/lhsbbob/segment/resolve/main/rvm_mobilenetv3_fp32.onnx" -o /tmp/rvm_model.onnx
-          ls -la /tmp/rvm_model.onnx
-
       - name: Fix dynamic library paths
         run: |
           # Remove CI-specific rpaths (they don't exist on user's machine)
@@ -166,8 +161,8 @@ jobs:
           # Copy locale data
           cp data/locale/en-US.ini "${CONTENTS}/Resources/locale/"
 
-          # Copy RVM model
-          cp /tmp/rvm_model.onnx "${CONTENTS}/Resources/models/"
+          # Copy RVM model (bundled in repo)
+          cp data/models/rvm_mobilenetv3_fp32.onnx "${CONTENTS}/Resources/models/"
 
           # Create Info.plist (required for macOS bundle)
           cat > "${CONTENTS}/Info.plist" << 'PLIST'
@@ -275,12 +270,6 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Download RVM model
-        shell: bash
-        run: |
-          curl -L "https://huggingface.co/lhsbbob/segment/resolve/main/rvm_mobilenetv3_fp32.onnx" -o /tmp/rvm_model.onnx
-          ls -la /tmp/rvm_model.onnx
-
       - name: Package
         shell: bash
         run: |
@@ -291,9 +280,9 @@ jobs:
           # Include locale data files
           mkdir -p release/data/obs-plugins/obs-ai-matting-pro/locale
           cp data/locale/en-US.ini release/data/obs-plugins/obs-ai-matting-pro/locale/
-          # Include RVM model
+          # Include RVM model (bundled in repo)
           mkdir -p release/data/obs-plugins/obs-ai-matting-pro/models
-          cp /tmp/rvm_model.onnx release/data/obs-plugins/obs-ai-matting-pro/models/
+          cp data/models/rvm_mobilenetv3_fp32.onnx release/data/obs-plugins/obs-ai-matting-pro/models/
           cd release && 7z a "../release/${{ needs.check-event.outputs.pluginName }}-${{ needs.check-event.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}.zip" .
 
       - uses: actions/upload-artifact@v4
