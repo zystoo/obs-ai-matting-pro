@@ -120,13 +120,39 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
+      - name: Fix dynamic library paths
+        run: |
+          # Remove CI-specific rpaths (they don't exist on user's machine)
+          install_name_tool -delete_rpath "/tmp/ort/onnxruntime-osx-arm64-${ORT_VERSION}/lib" build/obs-ai-matting-pro.so || true
+          install_name_tool -delete_rpath "/tmp/obs_lib" build/obs-ai-matting-pro.so || true
+
+          # Add @loader_path rpath (looks in the same directory as the .so file)
+          install_name_tool -add_rpath @loader_path build/obs-ai-matting-pro.so
+
+          # Change ONNX Runtime link from @rpath to @loader_path (explicit path)
+          install_name_tool -change \
+            "@rpath/libonnxruntime.1.19.2.dylib" \
+            "@loader_path/libonnxruntime.dylib" \
+            build/obs-ai-matting-pro.so
+
+          # Copy and fix ONNX Runtime dylib
+          cp "${ORT_ROOT}/lib/libonnxruntime.dylib" build/libonnxruntime.dylib
+          install_name_tool -id "@loader_path/libonnxruntime.dylib" build/libonnxruntime.dylib
+
+          # Re-sign binaries (required after install_name_tool on Apple Silicon)
+          codesign --force --sign - build/obs-ai-matting-pro.so
+          codesign --force --sign - build/libonnxruntime.dylib
+
+          # Verify
+          otool -L build/obs-ai-matting-pro.so
+
       - name: Package
         run: |
           # Create .pkg installer that installs to
           # /Library/Application Support/obs-studio/obs-plugins/
           mkdir -p "pkg_root/Library/Application Support/obs-studio/obs-plugins"
           cp build/obs-ai-matting-pro.so "pkg_root/Library/Application Support/obs-studio/obs-plugins/"
-          cp "${ORT_ROOT}/lib/libonnxruntime.dylib" "pkg_root/Library/Application Support/obs-studio/obs-plugins/"
+          cp build/libonnxruntime.dylib "pkg_root/Library/Application Support/obs-studio/obs-plugins/"
 
           # Include locale data files (required for plugin to load and display name)
           mkdir -p "pkg_root/Library/Application Support/obs-studio/data/obs-plugins/obs-ai-matting-pro/locale"
