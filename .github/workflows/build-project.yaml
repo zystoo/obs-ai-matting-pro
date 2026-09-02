@@ -145,26 +145,21 @@ jobs:
 
       - name: Package
         run: |
-          # Create macOS .plugin bundle (standard OBS plugin format on macOS)
-          PLUGIN_DIR="pkg_root/Library/Application Support/obs-studio/plugins/obs-ai-matting-pro.plugin"
-          CONTENTS="${PLUGIN_DIR}/Contents"
+          OBS_DIR="Library/Application Support/obs-studio"
+          ROOT="pkg_root/${OBS_DIR}"
 
-          # Create bundle structure
+          # ── Method 1: .plugin bundle (macOS standard, like obs-backgroundremoval) ──
+          PLUGIN_DIR="${ROOT}/plugins/obs-ai-matting-pro.plugin"
+          CONTENTS="${PLUGIN_DIR}/Contents"
           mkdir -p "${CONTENTS}/MacOS"
           mkdir -p "${CONTENTS}/Resources/locale"
           mkdir -p "${CONTENTS}/Resources/models"
 
-          # Copy binary (rename .so to no extension, like obs-backgroundremoval)
           cp build/obs-ai-matting-pro.so "${CONTENTS}/MacOS/obs-ai-matting-pro"
           cp build/libonnxruntime.dylib "${CONTENTS}/MacOS/"
-
-          # Copy locale data
           cp data/locale/en-US.ini "${CONTENTS}/Resources/locale/"
-
-          # Copy RVM model (bundled in repo)
           cp data/models/rvm_mobilenetv3_fp32.onnx "${CONTENTS}/Resources/models/"
 
-          # Create Info.plist (required for macOS bundle)
           cat > "${CONTENTS}/Info.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -184,8 +179,17 @@ jobs:
           </plist>
           PLIST
 
-          # Code-sign the entire bundle
           codesign --force --sign - --deep "${PLUGIN_DIR}"
+
+          # ── Method 2: raw .so in obs-plugins/ (fallback, Linux/Windows style) ──
+          mkdir -p "${ROOT}/obs-plugins"
+          cp build/obs-ai-matting-pro.so "${ROOT}/obs-plugins/"
+          cp build/libonnxruntime.dylib "${ROOT}/obs-plugins/"
+
+          mkdir -p "${ROOT}/data/obs-plugins/obs-ai-matting-pro/locale"
+          mkdir -p "${ROOT}/data/obs-plugins/obs-ai-matting-pro/models"
+          cp data/locale/en-US.ini "${ROOT}/data/obs-plugins/obs-ai-matting-pro/locale/"
+          cp data/models/rvm_mobilenetv3_fp32.onnx "${ROOT}/data/obs-plugins/obs-ai-matting-pro/models/"
 
           # Create .pkg installer
           mkdir -p release

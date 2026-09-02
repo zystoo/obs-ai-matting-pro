@@ -29,14 +29,20 @@ static struct obs_source_info am_info = {};
 
 bool obs_module_load(void)
 {
+    blog(LOG_INFO, "[ai-matting-pro] obs_module_load called");
+
     // Store module data path for default model loading
     obs_module_t *mod = obs_current_module();
     if (mod) {
         const char *dp = obs_get_module_data_path(mod);
-        if (dp) {
+        if (dp && *dp) {
             g_module_data_path = dp;
-            blog_info("module data path: %s", dp);
+            blog(LOG_INFO, "[ai-matting-pro] module data path: %s", dp);
+        } else {
+            blog(LOG_WARNING, "[ai-matting-pro] module data path is empty");
         }
+    } else {
+        blog(LOG_WARNING, "[ai-matting-pro] obs_current_module() returned NULL");
     }
 
     am_info.id = "obs_ai_matting_pro";
@@ -51,7 +57,7 @@ bool obs_module_load(void)
     am_info.get_defaults = am_get_defaults;
     obs_register_source(&am_info);
 
-    blog_info("plugin loaded successfully");
+    blog(LOG_INFO, "[ai-matting-pro] plugin loaded successfully, id=obs_ai_matting_pro");
     return true;
 }
 
