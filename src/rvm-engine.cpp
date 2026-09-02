@@ -1,5 +1,12 @@
 #include "rvm-engine.h"
 
+// Fix for missing SAL annotation in ONNX Runtime headers on some Windows SDK versions
+#ifdef _WIN32
+#ifndef _Frees_ptr_opt_
+#define _Frees_ptr_opt_
+#endif
+#endif
+
 #include <onnxruntime_cxx_api.h>
 
 #include <cstring>
